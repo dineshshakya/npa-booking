@@ -36,13 +36,31 @@ create table if not exists public.bookings (
   notes          text not null default '' check (char_length(notes) <= 2000),
   date           date not null,
   start_at       timestamptz not null,
+  end_at         timestamptz not null,  -- always start_at + 60 min, set by trigger
   ins_front_path text not null,
   ins_back_path  text,
-  booked_range   tstzrange generated always as
-                   (tstzrange(start_at, start_at + interval '60 minutes')) stored,
   -- No two 60-minute appointments may overlap, at the database level.
-  constraint no_overlap exclude using gist (booked_range with &&)
+  -- (The range is built from plain columns: tstzrange() is immutable, but
+  -- timestamptz + interval is not, so the +60 min math lives in the trigger.)
+  constraint no_overlap exclude using gist (tstzrange(start_at, end_at) with &&)
 );
+
+-- end_at is always exactly 60 minutes after start_at, no matter what the
+-- client sends. Triggers may use non-immutable expressions.
+create or replace function public.set_booking_end()
+returns trigger
+language plpgsql
+as $$
+begin
+  NEW.end_at := NEW.start_at + interval '60 minutes';
+  return NEW;
+end;
+$$;
+
+drop trigger if exists trg_set_booking_end on public.bookings;
+create trigger trg_set_booking_end
+  before insert or update on public.bookings
+  for each row execute function public.set_booking_end();
 
 create index if not exists idx_bookings_date on public.bookings (date);
 
